@@ -66,6 +66,7 @@ struct timeval last_ts;
 int promisc_flag = 1;
 int check_interval = 5;
 int do_report = 0;
+int topdns = 10;
 
 char *device = NULL;
 pcap_t *pcap = NULL;
@@ -144,6 +145,8 @@ void cmdusage(void)
     fprintf(stderr, "usage: dnsmon [opts] netdevice|savefile\n");
     fprintf(stderr, "\t-4\tListen ipv4 packets\n");
     fprintf(stderr, "\t-6\tListen ipv6 packets\n");
+    fprintf(stderr, "\t-i\tRefresh interval\n");
+    fprintf(stderr, "\t-t\tTop x (default 10)\n");
     fprintf(stderr, "\t-b expr\tBPF filter\n");
     fprintf(stderr, "\t-v\tversion\n");
     fprintf(stderr, "\t-h\tthis help\n");
@@ -489,7 +492,7 @@ void dns_report(hashtbl *hash)
     
     qsort(sortme, sortsize, sizeof(sortitem_t), sortitem_cmp);
     
-    for (i = 0;i < 10 && i < sortsize; i++) {
+    for (i = 0;i < topdns && i < sortsize; i++) {
         dns = (dns_response_t *)(sortme + i)->ptr;
 
         pps = (double)dns->count / (double)check_interval;
@@ -536,13 +539,23 @@ int main(int argc, char *argv[])
     struct bpf_program fp;
     int x;
 
-    while ((x = getopt(argc, argv, "46bdvh")) != -1) {
+    while ((x = getopt(argc, argv, "46bdi:t:vh")) != -1) {
         switch (x) {
             case '4':
                 opt_ipv4 = 1;
                 break;
             case '6':
                 opt_ipv6 = 1;
+                break;
+            case 'i':
+                check_interval = atoi(optarg);
+                if (check_interval <= 0)
+                    cmdusage();
+                break;
+            case 't':
+                topdns = atoi(optarg);
+                if (topdns <= 0)
+                    cmdusage();
                 break;
             case 'b':
                 bpf_program_str = strdup(optarg);
