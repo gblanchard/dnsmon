@@ -1,0 +1,30 @@
+dnsmon is a small utility based on dnstop that allows for 
+monitoring the top 10 responses size on any DNS server and 
+determine the impact it has on it.
+
+Usage:
+    dnsmon device|pcapsavefile
+
+Example output:
+1   a.root-servers.net 7200.11kbps 115.20pps
+2   pkts.asia 5157.58kbps 119.00pps
+3   www.microsoft.com 3072.95kbps 93.40pps
+4   www.facebook.com 1440.95kbps 38.20pps
+5   . 1365.95kbps 55.80pps
+6   us-courier.push-apple.com.akadns.net 1273.60kbps 27.00pps
+7   www.google.com 1229.35kbps 42.00pps
+8   wpad.home 1204.50kbps 43.80pps
+9   www.belkin.com 1104.30kbps 31.20pps
+10  plus.google.com 1075.15kbps 22.40pps
+
+Compile:
+    ./configure
+    make
+    make install
+
+TODO:
+    This is still extremely beta, it compiles on linux and BSD.
+    Needs much testing
+    Next steps is to allow for performing actions based on
+    thresholds
+
