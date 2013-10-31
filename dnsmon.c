@@ -84,7 +84,15 @@ int opt_ipv6 = 0;
 hashtbl *hashtable = NULL;
 
 typedef struct {
+    unsigned int a;
+    unsigned int ns;
+    unsigned int any;
+    unsigned int other;
+} qtype_t;
+
+typedef struct {
     char *name;
+    qtype_t qtype;
     long long unsigned int count;
     long long unsigned int size;
 } dns_response_t;
@@ -230,6 +238,22 @@ rfc1035NameUnpack(const char *buf, size_t sz, off_t * off, char *name, size_t ns
     return 0;
 }
 
+void process_qtype(dns_response_t *r, unsigned short qtype)
+{
+    switch (qtype) {
+        case T_A:
+            r->qtype.a++;
+            break;
+        case T_NS:
+            r->qtype.ns++;
+            break;
+        case T_ANY:
+            r->qtype.any++;
+            break;
+        default:
+            r->qtype.other++;
+    }
+}
 
 int handle_dns(const char *buf, int len, int udplen,
     const inX_addr * src_addr,
@@ -303,11 +327,14 @@ int handle_dns(const char *buf, int len, int udplen,
         dns->name = strdup(qname);
         dns->count = 1;
         dns->size = udplen;
+        memset(&dns->qtype, 0, sizeof(qtype_t));
         hash_add(dns->name, dns, hashtable);
     } else {
         dns->count++;
         dns->size += udplen;
     }
+
+    process_qtype(dns, qtype);
 
     return 0;
 }
@@ -491,10 +518,10 @@ void dns_report(hashtbl *hash)
         kbps = (double)dns->size / 1024.0 / (double)check_interval;
 
         printf("%d\t%s %0.2fkbps %0.2fpps\n", 
-        i+1,
-        dns->name,
-        kbps,
-        pps);
+        i+1, dns->name, kbps, pps);
+
+        printf("\tA = %d NS = %d ANY = %d OTHER = %d\n",
+            dns->qtype.a, dns->qtype.ns, dns->qtype.any, dns->qtype.other);
     }
     if (i > 0)
         printf("\n");
