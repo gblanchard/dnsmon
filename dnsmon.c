@@ -54,6 +54,7 @@
 #if defined(__linux__) || defined(__GLIBC__) || defined(__GNU__)
 #define uh_dport dest
 #define uh_sport source
+#define uh_ulen len
 #endif
 
 #ifdef HAVE_STRUCT_BPF_TIMEVAL
@@ -227,7 +228,7 @@ rfc1035NameUnpack(const char *buf, size_t sz, off_t * off, char *name, size_t ns
 }
 
 
-int handle_dns(const char *buf, int len,
+int handle_dns(const char *buf, int len, int udplen,
     const inX_addr * src_addr,
     const inX_addr * dst_addr,
     unsigned short vlan)
@@ -306,11 +307,11 @@ int handle_dns(const char *buf, int len,
         dns = calloc(1, sizeof(*dns));
         dns->name = strdup(qname);
         dns->count = 1;
-        dns->size = len;
+        dns->size = udplen;
         hash_add(qname, dns, hashtable);
     } else {
         dns->count++;
-        dns->size += len;
+        dns->size += udplen;
     }
 
     return 0;
@@ -323,7 +324,7 @@ int handle_udp(const struct udphdr *udp, int len,
 {
     if (check_port && check_port != udp->uh_dport && check_port != udp->uh_sport)
 	return 0;
-    if (0 == handle_dns((char *)(udp + 1), len - sizeof(*udp), src_addr, dst_addr, vlan))
+    if (0 == handle_dns((char *)(udp + 1), len - sizeof(*udp), udp->uh_ulen, src_addr, dst_addr, vlan))
 	return 0;
     return 1;
 }
