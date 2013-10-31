@@ -245,8 +245,6 @@ int handle_dns(const char *buf, int len, int udplen,
     char *t;
     const char *s;
     int x;
-    char src_str[INET6_ADDRSTRLEN];
-    char dst_str[INET6_ADDRSTRLEN];
 
     if (len < sizeof(qh))
         return 0;
@@ -299,19 +297,13 @@ int handle_dns(const char *buf, int len, int udplen,
     memcpy(&us, buf + offset + 2, 2);
     qclass = ntohs(us);
 
-    inXaddr_ntop(src_addr, src_str, sizeof(src_str));
-    inXaddr_ntop(dst_addr, dst_str, sizeof(dst_str));
-
-    //printf("qname = %s qr = %d len %d vlan %d %s %s\n", 
-    //    qname, qh.qr, len, vlan, src_str, dst_str);
-
     dns_response_t *dns = hash_find(qname, hashtable);
     if (dns == NULL) {
         dns = calloc(1, sizeof(*dns));
         dns->name = strdup(qname);
         dns->count = 1;
         dns->size = udplen;
-        hash_add(qname, dns, hashtable);
+        hash_add(dns->name, dns, hashtable);
     } else {
         dns->count++;
         dns->size += udplen;

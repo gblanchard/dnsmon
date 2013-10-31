@@ -79,6 +79,8 @@ hash_free(hashtbl *tbl, void freefunc(void *))
 		}
 		tbl->items[slot] = NULL;
 	}
+    free(tbl->items);
+    free(tbl);
 }
 
 static void
