@@ -507,6 +507,7 @@ void dns_report(hashtbl *hash)
     if (i > 0)
         printf("\n");
 
+    free(sortme);
     hash_free(hashtable, dnsstring_free);
     hashtable = hash_create(hash_buckets, string_hash, string_cmp);
 }
