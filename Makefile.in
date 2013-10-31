@@ -15,11 +15,13 @@ mandir=@mandir@
 
 SRCS=	$(PROG).c \
 	hashtbl.c hashtbl.h \
-	inX_addr.c inX_addr.h
+	inX_addr.c inX_addr.h \
+    lookup3.c
 
 OBJS=	$(PROG).o \
 	hashtbl.o \
-	inX_addr.o
+	inX_addr.o \
+    lookup3.o
 
 all: $(PROG)
 
