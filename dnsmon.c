@@ -67,6 +67,8 @@ int promisc_flag = 1;
 int check_interval = 5;
 int do_report = 0;
 int topdns = 10;
+int topsource = 10;
+int bandwidthlimit = 0;
 
 char *device = NULL;
 pcap_t *pcap = NULL;
@@ -84,6 +86,11 @@ int opt_ipv6 = 0;
 hashtbl *hashtable = NULL;
 
 typedef struct {
+    inX_addr addr;
+    unsigned long long count;
+} query_source_t;
+
+typedef struct {
     unsigned int a;
     unsigned int ns;
     unsigned int any;
@@ -92,6 +99,9 @@ typedef struct {
 
 typedef struct {
     char *name;
+    // Sources of the queries
+    hashtbl *sources;
+
     qtype_t qtype;
     long long unsigned int count;
     long long unsigned int size;
@@ -104,8 +114,8 @@ typedef struct {
 
 int sortitem_cmp(const void *A, const void *B)
 {
-    sortitem_t *a = A;
-    sortitem_t *b = B;
+    const sortitem_t *a = (const sortitem_t *)A;
+    const sortitem_t *b = (const sortitem_t *)B;
 
     if (a->size < b->size)
         return 1;
@@ -134,6 +144,7 @@ string_cmp(const void *a, const void *b)
 void dnsstring_free(void *p)
 {
     dns_response_t *dns = p;
+    hash_free(dns->sources, free);
     free(dns->name);
     free(dns);
 }
@@ -154,6 +165,7 @@ void cmdusage(void)
     fprintf(stderr, "\t-4\tListen ipv4 packets\n");
     fprintf(stderr, "\t-6\tListen ipv6 packets\n");
     fprintf(stderr, "\t-i\tRefresh interval\n");
+    fprintf(stderr, "\t-l\tBandwidth Threshold in kbps (default = 0)\n");
     fprintf(stderr, "\t-t\tTop x (default 10)\n");
     fprintf(stderr, "\t-b expr\tBPF filter\n");
     fprintf(stderr, "\t-v\tversion\n");
@@ -180,9 +192,9 @@ rfc1035NameUnpack(const char *buf, size_t sz, off_t * off, char *name, size_t ns
     size_t len;
     static int loop_detect = 0;
     if (loop_detect > 2)
-    return 4;       /* compression loop */
+        return 4;       /* compression loop */
     if (ns <= 0)
-    return 4;       /* probably compression loop */
+        return 4;       /* probably compression loop */
     do {
     if ((*off) >= sz)
         break;
@@ -197,13 +209,13 @@ rfc1035NameUnpack(const char *buf, size_t sz, off_t * off, char *name, size_t ns
         (*off) += sizeof(s);
         /* Sanity check */
         if ((*off) >= sz)
-        return 1;   /* message too short */
+            return 1;   /* message too short */
         ptr = s & 0x3FFF;
         /* Make sure the pointer is inside this message */
         if (ptr >= sz)
-        return 2;   /* bad compression ptr */
+            return 2;   /* bad compression ptr */
         if (ptr < DNS_MSG_HDR_SZ)
-        return 2;   /* bad compression ptr */
+            return 2;   /* bad compression ptr */
         loop_detect++;
         rc = rfc1035NameUnpack(buf, sz, &ptr, name + no, ns - no);
         loop_detect--;
@@ -218,13 +230,13 @@ rfc1035NameUnpack(const char *buf, size_t sz, off_t * off, char *name, size_t ns
         (*off)++;
         len = (size_t) c;
         if (len == 0)
-        break;
+            break;
         if (len > (ns - 1))
-        len = ns - 1;
+            len = ns - 1;
         if ((*off) + len > sz)
-        return 4;   /* message is too short */
+            return 4;   /* message is too short */
         if (no + len + 1 > ns)
-        return 5;   /* qname would overflow name buffer */
+            return 5;   /* qname would overflow name buffer */
         memcpy(name + no, buf + (*off), len);
         (*off) += len;
         no += len;
@@ -232,7 +244,8 @@ rfc1035NameUnpack(const char *buf, size_t sz, off_t * off, char *name, size_t ns
     }
     } while (c > 0);
     if (no > 0)
-    *(name + no - 1) = '\0';
+        *(name + no - 1) = '\0';
+    
     /* make sure we didn't allow someone to overflow the name buffer */
     assert(no <= ns);
     return 0;
@@ -325,14 +338,20 @@ int handle_dns(const char *buf, int len, int udplen,
     if (dns == NULL) {
         dns = calloc(1, sizeof(*dns));
         dns->name = strdup(qname);
-        dns->count = 1;
-        dns->size = udplen;
-        memset(&dns->qtype, 0, sizeof(qtype_t));
+        dns->sources = hash_create(1000, my_inXaddr_hash, my_inXaddr_cmp); 
         hash_add(dns->name, dns, hashtable);
-    } else {
-        dns->count++;
-        dns->size += udplen;
     }
+
+    query_source_t *source = hash_find(dst_addr, dns->sources);
+    if (source == NULL) {
+        source = calloc(1, sizeof(query_source_t));
+        memcpy(&source->addr, dst_addr, sizeof(inX_addr));
+        hash_add(&source->addr, source, dns->sources);
+    } 
+    source->count++;
+
+    dns->count++;
+    dns->size += udplen;
 
     process_qtype(dns, qtype);
 
@@ -345,9 +364,11 @@ int handle_udp(const struct udphdr *udp, int len,
     unsigned short vlan)
 {
     if (check_port && check_port != udp->uh_dport && check_port != udp->uh_sport)
-	return 0;
-    if (0 == handle_dns((char *)(udp + 1), len - sizeof(*udp), udp->uh_ulen, src_addr, dst_addr, vlan))
-	return 0;
+	    return 0;
+    if (0 == handle_dns((char *)(udp + 1), len - sizeof(*udp), 
+        udp->uh_ulen, src_addr, dst_addr, vlan))
+	    return 0;
+    
     return 1;
 }
 
@@ -361,9 +382,8 @@ int handle_ipv6(struct ip6_hdr *ipv6, int len, unsigned short vlan)
     inX_addr dst_addr;
     uint16_t payload_len;
 
-
     if (0 == opt_ipv6)
-	return 0;
+    	return 0;
 
     offset = sizeof(struct ip6_hdr);
     nexthdr = ipv6->ip6_nxt;
@@ -409,16 +429,15 @@ int handle_ipv6(struct ip6_hdr *ipv6, int len, unsigned short vlan)
     }				/* while */
 
     /* Catch broken and empty packets */
-    if (((offset + payload_len) > len)
-	|| (payload_len == 0))
-	return (0);
+    if (((offset + payload_len) > len) || (payload_len == 0))
+	    return (0);
 
     if (IPPROTO_UDP != nexthdr)
-	return (0);
+	    return (0);
 
     if (handle_udp((struct udphdr *)((char *)ipv6 + offset), payload_len, 
         &src_addr, &dst_addr, vlan) == 0)
-	return (0);
+	    return (0);
 
     return (1);			/* Success */
 }
@@ -433,7 +452,7 @@ int handle_ipv4(const struct ip *ip, int len, unsigned short vlan)
 
 #if USE_IPV6
     if (ip->ip_v == 6)
-	return (handle_ipv6((struct ip6_hdr *)ip, len, vlan));
+	    return (handle_ipv6((struct ip6_hdr *)ip, len, vlan));
 #endif
 
     if (0 == opt_ipv4)
@@ -443,10 +462,11 @@ int handle_ipv4(const struct ip *ip, int len, unsigned short vlan)
     inXaddr_assign_v4(&dst_addr, &ip->ip_dst);
 
     if (IPPROTO_UDP != ip->ip_p)
-	return 0;
+	    return 0;
     if (0 == handle_udp((struct udphdr *)((char *)ip + offset), len - offset, 
         &src_addr, &dst_addr, vlan))
-	return 0;
+	    return 0;
+    
     return 1;
 }
 
@@ -461,11 +481,11 @@ int handle_ip(const u_char * pkt, int len, unsigned short vlan, unsigned short e
 {
 #if USE_IPV6
     if (etype == ETHERTYPE_IPV6) {
-	return (handle_ipv6((struct ip6_hdr *)pkt, len, vlan));
+	    return (handle_ipv6((struct ip6_hdr *)pkt, len, vlan));
     } else
 #endif
     if (etype == ETHERTYPE_IP) {
-	return handle_ipv4((struct ip *)pkt, len, vlan);
+	    return handle_ipv4((struct ip *)pkt, len, vlan);
     }
     return 0;
 }
@@ -490,43 +510,71 @@ int handle_ether(const u_char * pkt, int len)
     return handle_ip(pkt, len, vlan, etype);
 }
 
-void dns_report(hashtbl *hash)
+void dns_report()
 {
-    int i;
     unsigned long long sum;
     double pps, kbps;
     dns_response_t *dns;
-    int sortsize = hash_count(hash);
-    sortitem_t *sortme = calloc(sortsize, sizeof(sortitem_t));
+    query_source_t *source;
+    char source_str[INET6_ADDRSTRLEN];
+    sortitem_t *topquery, *topsource;
+    int topquery_size, topsource_size;
+    int i,y;
 
-    hash_iter_init(hash);
+    topquery_size = hash_count(hashtable);
+    topquery = calloc(topquery_size, sizeof(sortitem_t));
 
-    sortsize = 0;
-    while ((dns = hash_iterate(hash))) {
+    hash_iter_init(hashtable);
+
+    topquery_size = 0;
+    while ((dns = hash_iterate(hashtable))) {
         sum += dns->size;
-        sortme[sortsize].size = dns->size;
-        sortme[sortsize].ptr = dns;
-        sortsize++;
+        topquery[topquery_size].size = dns->size;
+        topquery[topquery_size].ptr = dns;
+        topquery_size++;
     }
     
-    qsort(sortme, sortsize, sizeof(sortitem_t), sortitem_cmp);
+    qsort(topquery, topquery_size, sizeof(sortitem_t), sortitem_cmp);
     
-    for (i = 0;i < topdns && i < sortsize; i++) {
-        dns = (dns_response_t *)(sortme + i)->ptr;
+    for (i = 0;i < topdns && i < topquery_size; i++) {
+        dns = (dns_response_t *)(topquery + i)->ptr;
 
         pps = (double)dns->count / (double)check_interval;
         kbps = (double)dns->size / 1024.0 / (double)check_interval;
+
+        if (kbps <= bandwidthlimit)
+            break;
 
         printf("%d\t%s %0.2fkbps %0.2fpps\n", 
         i+1, dns->name, kbps, pps);
 
         printf("\tA = %d NS = %d ANY = %d OTHER = %d\n",
             dns->qtype.a, dns->qtype.ns, dns->qtype.any, dns->qtype.other);
+
+        topsource_size = hash_count(dns->sources);
+        topsource = calloc(topsource_size, sizeof(sortitem_t));
+        hash_iter_init(dns->sources);
+
+        topsource_size = 0;
+        while ((source = hash_iterate(dns->sources))) {
+            topsource[topsource_size].size = source->count;
+            topsource[topsource_size].ptr = source;
+            topsource_size++;
+        }
+
+        qsort(topsource, topsource_size, sizeof(sortitem_t), sortitem_cmp);
+        for (y = 0;y < 10 && y < topsource_size; y++) {
+            source = (query_source_t *)(topsource + y)->ptr;
+            inXaddr_ntop(&source->addr, source_str, sizeof(source_str));
+            printf("\tsrcaddr=%s count=%llu\n", source_str, source->count);   
+        }
+        free(topsource);
     }
+
     if (i > 0)
         printf("\n");
 
-    free(sortme);
+    free(topquery);
     hash_free(hashtable, dnsstring_free);
     hashtable = hash_create(hash_buckets, string_hash, string_cmp);
 }
@@ -540,6 +588,7 @@ pcap_select(pcap_t * p, int sec, int usec)
     FD_SET(pcap_fileno(p), &R);
     to.tv_sec = sec;
     to.tv_usec = usec;
+    
     return select(pcap_fileno(p) + 1, &R, NULL, NULL, &to);
 }
 
@@ -559,7 +608,7 @@ int main(int argc, char *argv[])
     struct bpf_program fp;
     int x;
 
-    while ((x = getopt(argc, argv, "46bdi:t:vh")) != -1) {
+    while ((x = getopt(argc, argv, "46bdi:t:l:vh")) != -1) {
         switch (x) {
             case '4':
                 opt_ipv4 = 1;
@@ -575,6 +624,11 @@ int main(int argc, char *argv[])
             case 't':
                 topdns = atoi(optarg);
                 if (topdns <= 0)
+                    cmdusage();
+                break;
+            case 'l':
+                bandwidthlimit = atoi(optarg);
+                if (bandwidthlimit < 0)
                     cmdusage();
                 break;
             case 'b':
@@ -668,18 +722,17 @@ int main(int argc, char *argv[])
             x = pcap_dispatch(pcap, 50, handle_pcap, NULL);
             if (x != 0 && do_report) {
                 do_report = 0;
-                dns_report(hashtable);
+                dns_report();
             }
         }
     } else {
 
         while(pcap_dispatch(pcap, 1, handle_pcap, NULL)) {
         }
-        dns_report(hashtable);
+        dns_report();
     }
 
     pcap_close(pcap);
-
     hash_free(hashtable, free);
 
     return 0;
